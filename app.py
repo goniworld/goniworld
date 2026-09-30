@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
-import random
 import math
 from scipy.stats.mstats import winsorize
 from transformers import pipeline
@@ -32,43 +31,47 @@ def apply_z_score_normalization(data_series, lower_is_better=False):
     return z_scores
 
 # -------------------------------------------------------------------
-# [데이터 크롤링 모듈] 위키피디아 및 KRX 기반 실시간 티커 추출 [cite: 48, 51]
+# [데이터 크롤링 모듈] 체급별(대/중/소) 미국 및 한국 시장 티커 추출
 # -------------------------------------------------------------------
-@st.cache_data(ttl=86400) # 서버 부하 방지를 위해 원본 리스트만 하루 1번 캐싱
+@st.cache_data(ttl=86400) # 서버 부하 방지를 위해 하루 1번 캐싱
 def get_us_market_data(size_category):
-    """위키피디아 S&P 지수 테이블을 실시간 스크래핑하여 미국 종목코드와 이름을 가져옵니다."""
-    if size_category == "대형주":
-        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-    elif size_category == "중형주":
-        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_400_companies'
-    else: # 소형주
-        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_600_companies'
-        
-    df = pd.read_html(url)[0]
-    name_col = 'Security' if 'Security' in df.columns else 'Company'
-    
-    results = []
-    for _, row in df.iterrows():
-        ticker = str(row['Symbol']).replace('.', '-')
-        name = str(row[name_col])
-        results.append((ticker, name))
-        
-    return results
+    """미국 시장을 대형주, 중형주, 소형주 체급별로 나누어 주요 종목을 가져옵니다."""
+    try:
+        if size_category == "대형주":
+            df = fdr.StockListing('S&P500') # 미국 대형 우량주 500개
+            target_df = df.iloc[:50] # 상위 50개 대형주
+        elif size_category == "중형주":
+            df = fdr.StockListing('NASDAQ') # 나스닥 주요 종목
+            target_df = df.iloc[:50] # 나스닥 상위 50개
+        else: # 소형주
+            df = fdr.StockListing('NYSE') # 뉴욕증권거래소 종목
+            target_df = df.iloc[:50] # NYSE 상위 50개 중소형 유동성 종목
+            
+        results = []
+        for _, row in target_df.iterrows():
+            ticker = str(row['Symbol']).replace('.', '-')
+            name = str(row.get('Name', ticker))
+            results.append((ticker, name))
+            
+        return results
+    except Exception as e:
+        st.error(f"미국 시장 데이터를 가져오는 중 오류가 발생했습니다: {e}")
+        return []
 
 @st.cache_data(ttl=86400)
 def get_kr_market_data(size_category):
-    """FinanceDataReader를 활용하여 한국 시가총액 규모별 종목코드와 이름을 추출합니다."""
+    """한국 시장을 시가총액 및 거래대금 기준으로 대/중/소형주 체급별 상위 50개씩 추출합니다."""
     df = fdr.StockListing('KRX')
     
     if 'Marcap' in df.columns:
         df = df.sort_values('Marcap', ascending=False).reset_index(drop=True)
     
     if size_category == "대형주":
-        target_df = df.iloc[:50] # 시총 최상위 50개 (KOSPI 우량주)
+        target_df = df.iloc[:50] # KOSPI 시총 최상위 50개 우량주
     elif size_category == "중형주":
-        target_df = df.iloc[100:300] # 시총 101~300위 (중형주)
+        target_df = df.iloc[100:150] # KOSPI 중형주 중 상위 50개
     else: # 소형주
-        target_df = df.iloc[500:1500] # 시총 501위 이하 (주로 KOSDAQ 강소기업)
+        target_df = df.iloc[500:550] # KOSDAQ/KOSPI 소형 강소기업 중 상위 50개
         
     results = []
     for _, row in target_df.iterrows():
@@ -76,7 +79,7 @@ def get_kr_market_data(size_category):
         name = str(row['Name'])
         market = str(row.get('Market', ''))
         
-        # yfinance 인식 포맷 추가 (.KS: 코스피, .KQ: 코스닥)
+        # yfinance 인식 포맷 (.KS: 코스피, .KQ: 코스닥)
         if 'KOSPI' in market:
             ticker = code + '.KS'
         elif 'KOSDAQ' in market:
@@ -164,37 +167,37 @@ def calculate_experimental_tech(ticker_name, hist_df, nlp_pipe):
 # -------------------------------------------------------------------
 def main():
     st.set_page_config(page_title="규모별 멀티 팩터 주식 추천 시스템", layout="wide")
-    st.title("📈 동적 스크래핑 기반 기업 규모 맞춤형 주식 분석 엔진")
-    st.write("하드코딩된 리스트 없이, 실시간으로 시장 데이터를 스크래핑하여 체급별 유망 종목을 발굴합니다.")
+    st.title("📈 체급별·유동성 맞춤형 멀티 팩터 주식 분석 엔진")
+    st.write("대형주·중형주·소형주 체급별 상위 유동성 종목을 기준으로 안정적인 팩터 분석을 수행합니다.")
     
     # 1. UI 선택 레이아웃
     col1, col2 = st.columns(2)
     with col1:
         market_selection = st.radio("분석할 주식 시장을 선택하세요:", ("🇺🇸 미국 시장", "🇰🇷 한국 시장"))
     with col2:
-        size_selection = st.radio("기업 규모(시가총액)를 선택하세요:", ("대형주", "중형주", "소형주"))
+        size_selection = st.radio("기업 규모(체급)를 선택하세요:", ("대형주", "중형주", "소형주"))
     
-    # 2. 세션(Session)을 통한 종목 리스트 관리 (매번 같은 주식이 나오는 현상 방지)
+    # 2. 세션(Session)을 통한 종목 리스트 관리
     if 'current_tickers' not in st.session_state:
         st.session_state.current_tickers = ""
     if 'ticker_names' not in st.session_state:
         st.session_state.ticker_names = {}
         
     st.markdown("---")
-    st.write(f"💡 현재 선택: **{market_selection} - {size_selection}**")
+    st.write(f"💡 현재 선택: **{market_selection} - {size_selection}** (체급별 상위 유동성 풀 기준)")
     
-    # 새로운 종목 15개를 뽑는 '가챠' 버튼
-    if st.button(f"🔄 '{size_selection}' 15개 종목 무작위 새로 뽑기"):
-        with st.spinner("해당 시장의 전체 종목을 스크래핑하여 15개를 무작위로 고르고 있습니다..."):
+    # 체급별 상위 종목 불러오기 버튼
+    if st.button(f"🔄 '{size_selection}' 상위 유동성 종목 불러오기"):
+        with st.spinner("해당 체급의 우량 종목 리스트를 안전하게 불러오는 중입니다..."):
             if "미국" in market_selection:
                 full_list = get_us_market_data(size_selection)
             else:
                 full_list = get_kr_market_data(size_selection)
                 
-            # 전체 리스트에서 15개만 셔플하여 추출
-            sampled = random.sample(full_list, min(15, len(full_list)))
+            # 해당 체급 상위 리스트 고정 추출 (최대 15개)
+            sampled = full_list[:min(15, len(full_list))]
             
-            # 종목명(한글/영문) 사전에 저장
+            # 종목명 사전에 저장
             for ticker, name in full_list:
                 st.session_state.ticker_names[ticker] = name
                 
@@ -207,7 +210,7 @@ def main():
     
     if st.button(f"위 종목들로 심층 팩터 분석 실행"):
         if not tickers:
-            st.warning("분석할 종목이 없습니다. '무작위 새로 뽑기' 버튼을 먼저 눌러주세요.")
+            st.warning("분석할 종목이 없습니다. '상위 유동성 종목 불러오기' 버튼을 먼저 눌러주세요.")
             return
             
         with st.spinner("선택된 종목들의 재무제표와 시장 데이터를 수집하여 알고리즘을 구동 중입니다... (1~2분 소요)"):
@@ -220,7 +223,7 @@ def main():
                 if len(hist) < 50:
                     continue 
                 
-                # 티커를 바탕으로 종목명 가져오기 (사용자가 직접 입력한 티커일 경우 야후 API에서 가져옴)
+                # 티커를 바탕으로 종목명 가져오기
                 company_name = st.session_state.ticker_names.get(t, "알 수 없음")
                 if company_name == "알 수 없음":
                     try:
