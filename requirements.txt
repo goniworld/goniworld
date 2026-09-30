@@ -6,3 +6,7 @@ scipy
 ta
 transformers
 torch
+finance-datareader
+lxml
+html5lib
+beautifulsoup4
