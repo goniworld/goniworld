@@ -2,5 +2,6 @@ streamlit
 pandas
 numpy
 yfinance
-plotly
 pykrx
+plotly
+setuptools<82
