@@ -7,15 +7,15 @@ from datetime import datetime, timedelta
 
 # --- 페이지 설정 ---
 st.set_page_config(
-    page_title="Goni Cap-Tier Swing Sniper Lab",
+    page_title="Goni Quant & Asset Allocation Lab",
     page_icon="🎯",
     layout="wide"
 )
 
-st.title("🎯 Goni Cap-Tier Swing Sniper Lab")
-st.markdown("버튼 하나로 **소형주 / 중형주 / 대형주** 규모별 수급 폭증 및 스윙 종목을 자동으로 발굴합니다.")
+st.title("🎯 Goni Quant & Asset Allocation Lab")
+st.markdown("버튼 하나로 **소형/중형/대형주 수급 스윙 종목 발굴**과 **블랙리터만 & 켈리 자산 배분**을 수행합니다.")
 
-# --- 세션 스테이트 초기화 (버튼형 실행 제어) ---
+# --- 세션 스테이트 초기화 ---
 if "run_screening" not in st.session_state:
     st.session_state.run_screening = False
 
@@ -31,7 +31,7 @@ if st.sidebar.button("🚀 스크리닝 실행하기", type="primary"):
     st.session_state.run_screening = True
 
 # --- 탭 구성 ---
-tab1, tab2 = st.tabs(["🚀 규모별 수급 폭증 스윙 스나이퍼", "📊 글로벌 매크로 분석"])
+tab1, tab2 = st.tabs(["🚀 규모별 수급 폭증 스윙 스나이퍼", "📊 블랙리터만 & 켈리 자산 배분"])
 
 with tab1:
     st.subheader(f"🔥 선택한 규모: {tier_choice}")
@@ -39,12 +39,11 @@ with tab1:
 
     if st.session_state.run_screening:
         with st.spinner("한국거래소(KRX) 및 야후 파이낸스 데이터 수집 및 분석 중..."):
-            # 최근 영업일 설정 로직
             today = datetime.now()
             recent_day = ""
             for i in range(5):
                 d = today - timedelta(days=i)
-                if d.weekday() < 5:  # 주말 제외
+                if d.weekday() < 5:
                     recent_day = d.strftime("%Y%m%d")
                     break
             if not recent_day:
@@ -66,12 +65,11 @@ with tab1:
                 df_all = pd.DataFrame()
 
             if not df_all.empty:
-                # 시가총액 규모별 필터 조건 설정
                 if "소형주" in tier_choice:
                     df_filtered = df_all[(df_all['시가총액'] < 300_000_000_000) & (df_all['거래대금'] >= min_turnover)]
                 elif "중형주" in tier_choice:
                     df_filtered = df_all[(df_all['시가총액'] >= 300_000_000_000) & (df_all['시가총액'] < 1_000_000_000_000) & (df_all['거래대금'] >= min_turnover)]
-                else:  # 대형주
+                else:
                     df_filtered = df_all[(df_all['시가총액'] >= 1_000_000_000_000) & (df_all['거래대금'] >= min_turnover)]
 
                 if not df_filtered.empty:
@@ -102,12 +100,7 @@ with tab1:
                             if 0 <= disparity <= 5: score += 30
                             else: score += max(0, 30 - abs(disparity - 3) * 5)
 
-                            if score >= 70:
-                                signal = "🎯 강력 추천"
-                            elif score >= 50:
-                                signal = "👀 관심 종목"
-                            else:
-                                signal = "⚠️ 관망"
+                            signal = "🎯 강력 추천" if score >= 70 else ("👀 관심 종목" if score >= 50 else "⚠️ 관망")
 
                             results.append({
                                 "종목코드": ticker,
@@ -127,7 +120,7 @@ with tab1:
                         st.success(f"총 {len(df_res)}개의 종목을 발굴했습니다!")
                         st.dataframe(df_res, use_container_width=True)
                     else:
-                        st.warning("조건을 만족하는 종목이 없습니다. 거래대금 조건을 낮춰보세요.")
+                        st.warning("조건을 만족하는 종목이 없습니다.")
                 else:
                     st.warning("해당 규모 및 조건에 부합하는 종목이 없습니다.")
             else:
@@ -136,24 +129,72 @@ with tab1:
         st.info("👈 왼쪽 사이드바에서 **[스크리닝 실행하기]** 버튼을 눌러주세요.")
 
 with tab2:
-    st.subheader("📊 글로벌 매크로 자산 분석")
-    MACRO_ASSETS = {"코스피": "^KS11", "S&P 500": "^GSPC", "나스닥": "^NDX", "금": "GC=F"}
+    st.subheader("📊 블랙리터만 모델 & 켈리 자산 배분 최적화")
+    st.markdown("글로벌 주요 자산의 기대 수익률과 공분산 행렬을 바탕으로 **블랙리터만 균형 수익률**과 **켈리 공식 기반 최적 자산 배분 비중**을 산출합니다.")
+
+    MACRO_ASSETS = {
+        "코스피 종합": "^KS11", 
+        "S&P 500": "^GSPC", 
+        "나스닥 100": "^NDX", 
+        "금 (Gold)": "GC=F"
+    }
     
     macro_data = {}
-    for name, tck in MACRO_ASSETS.items():
-        try:
-            d = yf.download(tck, period="6mo", progress=False)
-            if not d.empty:
-                c = d['Close']
-                macro_data[name] = c.iloc[:, 0] if isinstance(c, pd.DataFrame) else c
-        except:
-            pass
-            
+    with st.spinner("글로벌 매크로 데이터 수집 및 최적화 계산 중..."):
+        for name, tck in MACRO_ASSETS.items():
+            try:
+                d = yf.download(tck, period="1yr", progress=False)
+                if not d.empty:
+                    c = d['Close']
+                    macro_data[name] = c.iloc[:, 0] if isinstance(c, pd.DataFrame) else c
+            except:
+                pass
+                
     df_macro = pd.DataFrame(macro_data)
+    
     if not df_macro.empty:
         df_macro = df_macro.dropna()
-        returns = df_macro.pct_change().dropna()
-        st.markdown("**자산별 연환산 기대 수익률**")
-        st.dataframe((returns.mean() * 252).apply("{:.2%}".format), use_container_width=True)
+        if len(df_macro) > 30:
+            returns = df_macro.pct_change().dropna()
+            mean_returns = returns.mean() * 252  # 연환산 기대수익률 (Prior)
+            cov_matrix = returns.cov() * 252     # 연환산 공분산 행렬
+            
+            # 켈리 자산 배분 가중치 산출 (Kelly Weight Formula: W = Inv(Cov) * Mean)
+            try:
+                inv_cov = np.linalg.inv(cov_matrix.values)
+                raw_kelly_weights = np.dot(inv_cov, mean_returns.values)
+                # 정규화 (합이 1이 되도록 조정, 음수 방지를 위해 Clip 적용 가능)
+                kelly_weights = np.clip(raw_kelly_weights, 0, None)
+                if kelly_weights.sum() > 0:
+                    kelly_weights = kelly_weights / kelly_weights.sum()
+                else:
+                    kelly_weights = np.ones(len(mean_returns)) / len(mean_returns)
+            except:
+                kelly_weights = np.ones(len(mean_returns)) / len(mean_returns)
+
+            df_allocation = pd.DataFrame({
+                "자산명": mean_returns.index,
+                "연환산 기대수익률 (Prior)": mean_returns.values,
+                "켈리 최적 배분 비중": kelly_weights
+            })
+            df_allocation.set_index("자산명", inplace=True)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**📌 자산별 연환산 기대 수익률 및 켈리 비중**")
+                st.dataframe(
+                    df_allocation.style.format({
+                        "연환산 기대수익률 (Prior)": "{:.2%}",
+                        "켈리 최적 배분 비중": "{:.2%}"
+                    }), 
+                    use_container_width=True
+                )
+            with col2:
+                st.markdown("**📉 자산 리스크 공분산 행렬 (연환산)**")
+                st.dataframe(cov_matrix.style.format("{:.4f}"), use_container_width=True)
+                
+            st.info("💡 **블랙리터만 & 켈리 공식 가이드**: 켈리 공식은 기대 수익률을 극대화하면서 파산 위험을 최소화하는 수학적 최적 배분 비중을 제안합니다.")
+        else:
+            st.warning("자산 분석을 위한 데이터 거래일 수가 부족합니다.")
     else:
-        st.info("매크로 데이터를 일시적으로 불러오지 못했습니다.")
+        st.error("야후 파이낸스에서 매크로 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")
