@@ -2,126 +2,155 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+from pykrx import stock
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 
 # --- 페이지 설정 ---
 st.set_page_config(
-    page_title="Goni Advanced Quant Lab",
-    page_icon="🧠",
+    page_title="Goni Mid-Cap Swing Sniper Lab",
+    page_icon="🎯",
     layout="wide"
 )
 
-st.title("🧠 Goni Advanced Quantitative Research Lab")
-st.markdown("블랙리터만 기대수익률, 켈리 자산배분, 그리고 트리플 배리어/메타레이블링 팩터 엔진 (API Key Free)")
+st.title("🎯 Goni Mid-Cap Swing Sniper Lab")
+st.markdown("API 키 없이 **중소형주 시총 필터링 + 거래량 폭증(Volume Spike) + 20일선 이격도**를 활용한 알짜배기 스윙 종목 자동 발굴 시스템")
 
-# --- 1. 유니버스 설정 및 데이터 수집 (야후 파이낸스 활용 / 키 불필요) ---
-ASSETS = {
-    "코스피 종합": "^KS11",
-    "S&P 500": "^GSPC",
-    "나스닥 100": "^NDX",
-    "금 (Gold)": "GC=F",
-    "비트코인": "BTC-USD"
-}
+# --- 사이드바 필터 설정 ---
+st.sidebar.header("⚙️ 퀀트 스윙 스크리닝 필터")
+min_cap = st.sidebar.slider("최소 시가총액 (억 원)", 300, 2000, 500) * 100_000_000
+max_cap = st.sidebar.slider("최대 시가총액 (억 원)", 5000, 30000, 15000) * 100_000_000
+min_turnover = st.sidebar.number_input("최소 거래대금 (원)", value=3_000_000_000, step=1_000_000_000)
+min_score = st.sidebar.slider("최소 퀀트 스윙 점수", 50, 90, 70)
 
-@st.cache_data(ttl=3600)
-def fetch_quant_data():
-    data = {}
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365)
-    
-    for name, ticker in ASSETS.items():
-        df = yf.download(ticker, start=start_date, end=end_date, progress=False)
-        if not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df = df['Close'].iloc[:, 0]
-            else:
-                df = df['Close']
-            data[name] = df
-    return pd.DataFrame(data)
+# --- 탭 구성 ---
+tab1, tab2 = st.tabs(["🚀 중소형 수급 폭증 스윙 스나이퍼", "📊 블랙리터만 & 켈리 자산 배분"])
 
-with st.spinner("글로벌 퀀트 데이터 및 멀티팩터 연산 중..."):
-    df_market = fetch_quant_data()
+with tab1:
+    st.subheader("🔥 대형주 제외! 바닥권 수급 폭증 중소형 스윙 추천 종목")
+    st.markdown("삼성전자 같은 대형주를 제외하고, 평소보다 거래량이 2배 이상 터지며 20일선 위로 고개를 드는 알짜배기 종목들을 스크리닝합니다.")
 
-if not df_market.empty:
-    returns = df_market.pct_change().dropna()
-    
-    # ==========================================
-    # 모델 1: 블랙리터만 (Black-Litterman) - 사전 기대수익률 & 공분산
-    # ==========================================
-    st.subheader("📊 1. 블랙리터만(Black-Litterman) 모델 기초: 시장 균형 및 공분산")
-    mean_returns = returns.mean() * 252 # 연환산 Prior 수익률
-    cov_matrix = returns.cov() * 252   # 리스크 공분산 행렬
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**[Prior] 연환산 평균 기대 수익률**")
-        st.dataframe(mean_returns.map("{:.2%}".format), use_container_width=True)
-    with c2:
-        st.markdown("**자산 간 리스크 공분산 행렬**")
-        st.dataframe(cov_matrix.map("{:.4f}".format), use_container_width=True)
-
-    # ==========================================
-    # 모델 2: 켈리 공식 (Kelly Criterion) 기반 자산 배분
-    # ==========================================
-    st.markdown("---")
-    st.subheader("🎯 2. 켈리 공식(Kelly Criterion) & 변동성 역가중치 배분")
-    st.markdown("파산 위험을 최소화하고 복리 극대화를 노리는 수학적 자산 베팅 비중입니다.")
-    
-    # 켈리 개념을 응용한 변동성 및 샤프비율 기반 가중치 산출
-    volatility = returns.std() * np.sqrt(252)
-    sharpe_proxy = mean_returns / volatility
-    kelly_weights = np.maximum(sharpe_proxy, 0)
-    if kelly_weights.sum() > 0:
-        kelly_weights = kelly_weights / kelly_weights.sum()
-    else:
-        kelly_weights = pd.Series(1/len(ASSETS), index=ASSETS.keys())
+    @st.cache_data(ttl=3600)
+    def get_midcap_swing_picks(min_c, max_c, min_t):
+        today_str = datetime.now().strftime("%Y%m%d")
+        recent_day = (datetime.now() - timedelta(days=3)).strftime("%Y%m%d")
         
-    df_kelly = pd.DataFrame({"자산": kelly_weights.index, "켈리 최적 비중": kelly_weights.values, "연환산 변동성": volatility.values})
-    
-    col_k1, col_k2 = st.columns([1, 2])
-    with col_k1:
-        st.dataframe(df_kelly.style.format({"켈리 최적 비중": "{:.2%}", "연환산 변동성": "{:.2%}"}), use_container_width=True)
-    with col_k2:
-        fig_pie = go.Figure(data=[go.Pie(labels=kelly_weights.index, values=kelly_weights.values, hole=.3)])
-        fig_pie.update_layout(title="켈리 최적 자산 배분 뷰", margin=dict(l=20, r=20, t=30, b=20), height=250)
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-    # ==========================================
-    # 모델 3: 트리플 배리어 & 메타 레이블링 시뮬레이터 (스윙/추세 탐색)
-    # ==========================================
-    st.markdown("---")
-    st.subheader("🛡️ 3. 트리플 배리어 (Triple Barrier) 및 메타 레이블링 필터")
-    st.markdown("상단(익절 장벽), 하단(손절 장벽), 시간(보유 기간) 기준에 따른 최근 자산별 시그널 상태를 진단합니다.")
-    
-    barrier_results = []
-    for asset in df_market.columns:
-        series = df_market[asset].dropna()
-        if len(series) > 20:
-            current_price = series.iloc[-1]
-            sma_20 = series.rolling(20).mean().iloc[-1]
-            upper_barrier = sma_20 * 1.05  # 상단 익절 5% 장벽
-            lower_barrier = sma_20 * 0.95  # 하단 손절 -5% 장벽
+        try:
+            df_ks = stock.get_market_ohlcv_by_ticker(recent_day, market="KOSPI")
+            df_kq = stock.get_market_ohlcv_by_ticker(recent_day, market="KOSDAQ")
+        except:
+            return pd.DataFrame()
             
-            # 메타 레이블링 확신도 간이 평가 (변동성 대비 이격도)
-            distance_ratio = (current_price - sma_20) / sma_20
-            if current_price >= sma_20:
-                signal = "상승 추세 (메타 승인)"
-                confidence = min(0.5 + abs(distance_ratio) * 5, 0.95)
-            else:
-                signal = "하락/조정 추세 (관망)"
-                confidence = max(0.5 - abs(distance_ratio) * 5, 0.1)
+        df_ks['Market'] = 'KOSPI'
+        df_kq['Market'] = 'KOSDAQ'
+        df_all = pd.concat([df_ks, df_kq])
+        
+        # 시가총액 데이터 결합 (초대형주 쏠림 방지)
+        try:
+            df_cap_ks = stock.get_market_cap_by_ticker(recent_day, market="KOSPI")
+            df_cap_kq = stock.get_market_cap_by_ticker(recent_day, market="KOSDAQ")
+            df_cap = pd.concat([df_cap_ks, df_cap_kq])
+            df_all = df_all.join(df_cap[['시가총액']], how='left')
+        except:
+            df_all['시가총액'] = 0
+
+        # 사용자가 지정한 중소형주 및 거래대금 조건 필터링
+        df_filtered = df_all[
+            (df_all['시가총액'] >= min_c) & 
+            (df_all['시가총액'] <= max_c) & 
+            (df_all['거래대금'] >= min_t)
+        ]
+        
+        # 거래대금 회전율(거래대금 / 시가총액)이 높은 종목 상위 60개 추출하여 타겟팅
+        df_filtered['회전율'] = df_filtered['거래대금'] / df_filtered['시가총액']
+        df_target = df_filtered.sort_values(by="회전율", ascending=False).head(60)
+        
+        results = []
+        for ticker, row in df_target.iterrows():
+            name = stock.get_market_ticker_name(ticker)
+            market_suffix = ".KS" if row['Market'] == 'KOSPI' else ".KQ"
+            yf_ticker = f"{ticker}{market_suffix}"
+            
+            # 최근 3개월 데이터 분석
+            hist = yf.download(yf_ticker, period="3mo", progress=False)
+            if not hist.empty and len(hist) > 25:
+                close_series = hist['Close'].iloc[:, 0] if isinstance(hist.columns, pd.MultiIndex) else hist['Close']
+                vol_series = hist['Volume'].iloc[:, 0] if isinstance(hist.columns, pd.MultiIndex) else hist['Volume']
                 
-            barrier_results.append({
-                "자산명": asset,
-                "현재가": current_price,
-                "20일 이평선": sma_20,
-                "트리플 배리어 시그널": signal,
-                "메타레이블링 확신도": f"{confidence:.1%}"
-            })
-            
-    df_barrier = pd.DataFrame(barrier_results)
-    st.dataframe(df_barrier, use_container_width=True)
+                cur_price = close_series.iloc[-1]
+                sma_20 = close_series.rolling(20).mean().iloc[-1]
+                
+                # 거래량 폭증 배수 (오늘 거래량 / 최근 20일 평균 거래량)
+                avg_vol_20 = vol_series.rolling(20).mean().iloc[-1]
+                today_vol = vol_series.iloc[-1]
+                vol_spike_ratio = today_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
+                
+                disparity = (cur_price - sma_20) / sma_20 * 100
+                recent_ret = (cur_price - close_series.iloc[-20]) / close_series.iloc[-20] * 100
+                
+                # 중소형주 맞춤형 퀀트 스윙 점수 산출 로직
+                score = 0
+                if cur_price > sma_20: score += 40               # 20일선 안착 여부
+                if vol_spike_ratio >= 1.8: score += 30           # 거래량이 평소보다 1.8배 이상 터졌는가?
+                if 0 <= disparity <= 5: score += 30              # 과열권(5% 이상 이격)이 아닌 건강한 위치인가?
+                else: score += max(0, 30 - abs(disparity - 3)*5)
+                
+                confidence = min(max(score / 100, 0.2), 0.98)
+                
+                if score >= 75:
+                    signal = "🎯 강력 추천 (중소형 수급 유입)"
+                elif score >= 60:
+                    signal = "👀 관심 종목 (눌림목 체크)"
+                else:
+                    signal = "⚠️ 관망"
+                    
+                results.append({
+                    "종목코드": ticker,
+                    "종목명": name,
+                    "시장": row['Market'],
+                    "현재가": f"{cur_price:,.0f}원",
+                    "시가총액": f"{row['시가총액']//100_000_000:,.0f}억",
+                    "거래량 폭증 배수": f"{vol_spike_ratio:.1f}배",
+                    "20일 이격도": f"{disparity:+.2f}%",
+                    "최근 20일 추세": f"{recent_ret:+.2f}%",
+                    "퀀트 스윙 점수": score,
+                    "승률 확신도": f"{confidence:.1%}",
+                    "추천 상태": signal
+                })
+        return pd.DataFrame(results)
 
-else:
-    st.error("데이터를 불러오지 못했습니다. 네트워크 연결을 확인해주세요.")
+    with st.spinner("중소형 알짜 종목 필터링 및 거래량 폭증(Volume Spike) 전수 조사 중..."):
+        df_picks = get_midcap_swing_picks(min_cap, max_cap, min_turnover)
+
+    if not df_picks.empty:
+        df_filtered = df_picks[df_picks["퀀트 스윙 점수"] >= min_score]
+        df_filtered = df_filtered.sort_values(by="퀀트 스윙 점수", ascending=False)
+        
+        st.success(f"조건을 만족하는 알짜 중소형 스윙 종목 {len(df_filtered)}개를 발굴했습니다!")
+        st.dataframe(df_filtered.drop(columns=["퀀트 스윙 점수"]), use_container_width=True)
+    else:
+        st.warning("조건에 부합하는 종목이 없거나 데이터를 불러오는 중입니다. 필터 범위를 조금 넓혀보세요.")
+
+with tab2:
+    st.subheader("📊 블랙리터만 모델 기반 글로벌 매크로 균형 수익률")
+    MACRO_ASSETS = {"코스피 종합": "^KS11", "S&P 500": "^GSPC", "나스닥 100": "^NDX", "금 (Gold)": "GC=F"}
+    
+    macro_data = {}
+    for name, tck in MACRO_ASSETS.items():
+        d = yf.download(tck, period="1yr", progress=False)
+        if not d.empty:
+            macro_data[name] = d['Close'].iloc[:, 0] if isinstance(d.columns, pd.MultiIndex) else d['Close']
+    df_macro = pd.DataFrame(macro_data)
+    
+    if not df_macro.empty:
+        macro_returns = df_macro.pct_change().dropna()
+        mean_returns = macro_returns.mean() * 252
+        cov_matrix = macro_returns.cov() * 252
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**[Prior] 자산별 연환산 기대 수익률**")
+            st.dataframe(mean_returns.map("{:.2%}".format), use_container_width=True)
+        with c2:
+            st.markdown("**자산 리스크 공분산 행렬**")
+            st.dataframe(cov_matrix.map("{:.4f}".format), use_container_width=True)
