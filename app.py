@@ -34,9 +34,9 @@ def apply_z_score_normalization(data_series, lower_is_better=False):
 # -------------------------------------------------------------------
 # [데이터 크롤링 모듈] 위키피디아 및 KRX 기반 실시간 티커 추출 [cite: 48, 51]
 # -------------------------------------------------------------------
-@st.cache_data(ttl=86400) # 하루 단위로 캐싱하여 서버 과부하 방지
-def get_us_tickers(size_category):
-    """위키피디아 S&P 지수 테이블을 실시간 스크래핑하여 미국 종목을 가져옵니다."""
+@st.cache_data(ttl=86400) # 서버 부하 방지를 위해 원본 리스트만 하루 1번 캐싱
+def get_us_market_data(size_category):
+    """위키피디아 S&P 지수 테이블을 실시간 스크래핑하여 미국 종목코드와 이름을 가져옵니다."""
     if size_category == "대형주":
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
     elif size_category == "중형주":
@@ -45,17 +45,19 @@ def get_us_tickers(size_category):
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_600_companies'
         
     df = pd.read_html(url)[0]
-    tickers = df['Symbol'].tolist()
-    # yfinance 포맷에 맞게 문자 변환 (예: BRK.B -> BRK-B)
-    tickers = [str(t).replace('.', '-') for t in tickers]
+    name_col = 'Security' if 'Security' in df.columns else 'Company'
     
-    # API 호출 시간을 고려하여 무작위 15개 종목 샘플링
-    return random.sample(tickers, 15) if len(tickers) >= 15 else tickers
+    results = []
+    for _, row in df.iterrows():
+        ticker = str(row['Symbol']).replace('.', '-')
+        name = str(row[name_col])
+        results.append((ticker, name))
+        
+    return results
 
 @st.cache_data(ttl=86400)
-def get_kr_tickers(size_category):
-    """FinanceDataReader를 활용하여 한국 시가총액 규모별 종목을 추출합니다."""
-    # KRX 전 종목 시가총액 데이터 호출
+def get_kr_market_data(size_category):
+    """FinanceDataReader를 활용하여 한국 시가총액 규모별 종목코드와 이름을 추출합니다."""
     df = fdr.StockListing('KRX')
     
     if 'Marcap' in df.columns:
@@ -68,19 +70,22 @@ def get_kr_tickers(size_category):
     else: # 소형주
         target_df = df.iloc[500:1500] # 시총 501위 이하 (주로 KOSDAQ 강소기업)
         
-    tickers = []
+    results = []
     for _, row in target_df.iterrows():
         code = str(row['Code'])
+        name = str(row['Name'])
         market = str(row.get('Market', ''))
+        
         # yfinance 인식 포맷 추가 (.KS: 코스피, .KQ: 코스닥)
         if 'KOSPI' in market:
-            tickers.append(code + '.KS')
+            ticker = code + '.KS'
         elif 'KOSDAQ' in market:
-            tickers.append(code + '.KQ')
+            ticker = code + '.KQ'
         else:
-            tickers.append(code + '.KS')
+            ticker = code + '.KS'
+        results.append((ticker, name))
             
-    return random.sample(tickers, 15) if len(tickers) >= 15 else tickers
+    return results
 
 # -------------------------------------------------------------------
 # [제1 탭 모듈] 장기 투자 경제적 분석 (Piotroski F-Score)
@@ -162,28 +167,50 @@ def main():
     st.title("📈 동적 스크래핑 기반 기업 규모 맞춤형 주식 분석 엔진")
     st.write("하드코딩된 리스트 없이, 실시간으로 시장 데이터를 스크래핑하여 체급별 유망 종목을 발굴합니다.")
     
+    # 1. UI 선택 레이아웃
     col1, col2 = st.columns(2)
     with col1:
         market_selection = st.radio("분석할 주식 시장을 선택하세요:", ("🇺🇸 미국 시장", "🇰🇷 한국 시장"))
     with col2:
         size_selection = st.radio("기업 규모(시가총액)를 선택하세요:", ("대형주", "중형주", "소형주"))
     
-    # 2. 동적 웹스크래핑 및 API 기반 티커 자동 추출 [cite: 48, 51]
-    with st.spinner("해당 시장의 최신 종목 리스트를 스크래핑하여 분석 대상을 선정 중입니다..."):
-        if "미국" in market_selection:
-            scraped_tickers = get_us_tickers(size_selection)
-            market_text = "위키피디아 S&P 지수 데이터"
-        else:
-            scraped_tickers = get_kr_tickers(size_selection)
-            market_text = "한국거래소(KRX) 시가총액 랭킹"
+    # 2. 세션(Session)을 통한 종목 리스트 관리 (매번 같은 주식이 나오는 현상 방지)
+    if 'current_tickers' not in st.session_state:
+        st.session_state.current_tickers = ""
+    if 'ticker_names' not in st.session_state:
+        st.session_state.ticker_names = {}
+        
+    st.markdown("---")
+    st.write(f"💡 현재 선택: **{market_selection} - {size_selection}**")
+    
+    # 새로운 종목 15개를 뽑는 '가챠' 버튼
+    if st.button(f"🔄 '{size_selection}' 15개 종목 무작위 새로 뽑기"):
+        with st.spinner("해당 시장의 전체 종목을 스크래핑하여 15개를 무작위로 고르고 있습니다..."):
+            if "미국" in market_selection:
+                full_list = get_us_market_data(size_selection)
+            else:
+                full_list = get_kr_market_data(size_selection)
+                
+            # 전체 리스트에서 15개만 셔플하여 추출
+            sampled = random.sample(full_list, min(15, len(full_list)))
             
-    st.info(f"{market_text}를 기반으로 '{size_selection}'에 해당하는 종목 15개를 무작위로 추출했습니다. 직접 변경하실 수도 있습니다.")
+            # 종목명(한글/영문) 사전에 저장
+            for ticker, name in full_list:
+                st.session_state.ticker_names[ticker] = name
+                
+            # 화면 입력창 업데이트용 콤마 문자열 생성
+            st.session_state.current_tickers = ", ".join([x[0] for x in sampled])
+            
+    # 3. 텍스트 입력창 (세션에 저장된 값을 기본값으로 가져옴)
+    input_tickers = st.text_input("분석 대상을 추가하거나 직접 변경하려면 쉼표로 구분하여 입력하세요:", st.session_state.current_tickers)
+    tickers = [t.strip().upper() for t in input_tickers.split(',') if t.strip()]
     
-    input_tickers = st.text_input("분석 대상을 추가하거나 직접 변경하려면 쉼표로 구분하여 입력하세요:", ", ".join(scraped_tickers))
-    tickers = [t.strip().upper() for t in input_tickers.split(',')]
-    
-    if st.button(f"자동 추출된 {size_selection} 심층 팩터 분석 실행"):
-        with st.spinner("해당 종목들의 재무제표와 시장 데이터를 수집하여 팩터 알고리즘을 구동 중입니다... (1~2분 소요)"):
+    if st.button(f"위 종목들로 심층 팩터 분석 실행"):
+        if not tickers:
+            st.warning("분석할 종목이 없습니다. '무작위 새로 뽑기' 버튼을 먼저 눌러주세요.")
+            return
+            
+        with st.spinner("선택된 종목들의 재무제표와 시장 데이터를 수집하여 알고리즘을 구동 중입니다... (1~2분 소요)"):
             nlp_model = initialize_nlp_pipeline()
             analysis_results = []
             
@@ -193,11 +220,20 @@ def main():
                 if len(hist) < 50:
                     continue 
                 
+                # 티커를 바탕으로 종목명 가져오기 (사용자가 직접 입력한 티커일 경우 야후 API에서 가져옴)
+                company_name = st.session_state.ticker_names.get(t, "알 수 없음")
+                if company_name == "알 수 없음":
+                    try:
+                        company_name = stock_obj.info.get('shortName', '알 수 없음')
+                    except:
+                        pass
+                
                 raw_l = calculate_long_term_fundamental(stock_obj)
                 raw_s = calculate_short_term_momentum(hist)
                 raw_e = calculate_experimental_tech(t, hist, nlp_model)
                 
                 analysis_results.append({
+                    "종목명": company_name,
                     "종목코드": t,
                     "장기_원시점수": raw_l,
                     "단기_원시점수": raw_s,
@@ -221,9 +257,9 @@ def main():
             )
             
             df = df.sort_values(by="최종_종합_점수", ascending=False).reset_index(drop=True)
-            best_recommendation = df.iloc[0]['종목코드']
+            best_recommendation = df.iloc[0]
             
-            st.success(f"🏆 분석 완료! 스크래핑된 '{size_selection}' 그룹 내에서 종합 1위를 기록한 추천 종목은 **{best_recommendation}** 입니다.")
+            st.success(f"🏆 분석 완료! 종합 1위를 기록한 추천 종목은 **{best_recommendation['종목명']} ({best_recommendation['종목코드']})** 입니다.")
             
             tab_master, tab_long, tab_short, tab_exp = st.tabs([
                 "🥇 종합 추천 랭킹", 
@@ -234,19 +270,19 @@ def main():
             
             with tab_master:
                 st.subheader("📊 Z-Score 기반 최종 종목 랭킹")
-                st.dataframe(df[['종목코드', '최종_종합_점수', '장기투자_환산점수', '단기투자_환산점수', '실험투자_환산점수']].style.highlight_max(axis=0))
+                st.dataframe(df[['종목명', '종목코드', '최종_종합_점수', '장기투자_환산점수', '단기투자_환산점수', '실험투자_환산점수']].style.highlight_max(axis=0))
                 
             with tab_long:
                 st.subheader("🏢 장기 재무 건전성 및 가치 평가")
-                st.dataframe(df[['종목코드', '장기_원시점수']])
+                st.dataframe(df[['종목명', '종목코드', '장기_원시점수']])
                 
             with tab_short:
                 st.subheader("⚡ 단기 가격 추세 및 모멘텀 돌파")
-                st.dataframe(df[['종목코드', '단기_원시점수']])
+                st.dataframe(df[['종목명', '종목코드', '단기_원시점수']])
                 
             with tab_exp:
                 st.subheader("🧪 딥러닝 텍스트 감성 분석 및 리스크 패리티 모델")
-                st.dataframe(df[['종목코드', '실험적_원시점수']])
+                st.dataframe(df[['종목명', '종목코드', '실험적_원시점수']])
 
 if __name__ == "__main__":
     main()
